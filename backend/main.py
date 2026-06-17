@@ -16,7 +16,8 @@ load_dotenv()
 
 MONGO_URI = os.getenv("MONGO_URI")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# Defaulting to 2.5-flash as per your setup
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash") 
 
 if not MONGO_URI:
     print("ERROR: MONGO_URI is missing in backend/.env")
@@ -40,7 +41,6 @@ chat_collection = db.conversations
 class ChatRequest(BaseModel):
     session_id: str
     message: str
-
 
 genai_client = None
 if GEMINI_API_KEY:
@@ -88,7 +88,9 @@ async def health_check():
         "model": GEMINI_MODEL,
     }
 
-
+# -------------------------------------------------------------
+# CHAT ENDPOINT (Now with AI Memory / Context)
+# -------------------------------------------------------------
 @app.post("/chat")
 async def process_chat(request: ChatRequest):
     session_id = request.session_id.strip()
@@ -101,11 +103,30 @@ async def process_chat(request: ChatRequest):
     if not genai_client:
         raise HTTPException(status_code=500, detail="Gemini API key not configured")
 
+    # 1. FETCH PAST HISTORY FOR AI MEMORY
+    try:
+        # Get the last 20 messages so the AI remembers the conversation
+        cursor = chat_collection.find({"session_id": session_id}).sort("created_at", 1)
+        past_chats = await cursor.to_list(length=20)
+    except Exception:
+        past_chats = []
+
+    # 2. BUILD THE CONVERSATION ARRAY
+    conversation_history = []
+    for chat in past_chats:
+        conversation_history.append({"role": "user", "parts": [{"text": chat["user_message"]}]})
+        # Gemini expects 'model' instead of 'bot' or 'assistant'
+        conversation_history.append({"role": "model", "parts": [{"text": chat["bot_response"]}]})
+
+    # Add the brand new message to the end of the history
+    conversation_history.append({"role": "user", "parts": [{"text": message}]})
+
     bot_reply = ""
     try:
+        # Pass the ENTIRE history to Gemini, not just the single message
         response = genai_client.models.generate_content(
             model=GEMINI_MODEL,
-            contents=message,
+            contents=conversation_history, 
             config=types.GenerateContentConfig(
                 system_instruction=(
                     "You are Pixie, a helpful, smart, and polite AI assistant. "
@@ -120,6 +141,7 @@ async def process_chat(request: ChatRequest):
         print("==================================\n")
         raise HTTPException(status_code=502, detail=f"Gemini API error: {exc}")
 
+    # 3. SAVE TO MONGODB
     now = datetime.now(timezone.utc)
     chat_document = {
         "session_id": session_id,
@@ -138,7 +160,9 @@ async def process_chat(request: ChatRequest):
         print("====================================\n")
         raise HTTPException(status_code=500, detail=f"Database error: {exc}")
 
-
+# -------------------------------------------------------------
+# GET HISTORY ENDPOINT
+# -------------------------------------------------------------
 @app.get("/history/{session_id}")
 async def get_chat_history(session_id: str):
     try:
@@ -155,7 +179,21 @@ async def get_chat_history(session_id: str):
         print(f"HISTORY FETCH ERROR: {exc}")
         raise HTTPException(status_code=500, detail="Failed to fetch history")
 
+# -------------------------------------------------------------
+# NEW: CLEAR SESSION HISTORY ENDPOINT
+# -------------------------------------------------------------
+@app.delete("/history/clear/{session_id}")
+async def clear_chat_history(session_id: str):
+    try:
+        result = await chat_collection.delete_many({"session_id": session_id})
+        return {"cleared": True, "deleted_count": result.deleted_count}
+    except Exception as exc:
+        print(f"HISTORY CLEAR ERROR: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to clear history")
 
+# -------------------------------------------------------------
+# DB INSPECTION ENDPOINTS
+# -------------------------------------------------------------
 @app.get("/chats")
 async def get_all_chats():
     """Return all raw chat documents from MongoDB for inspection."""
@@ -196,3 +234,4 @@ async def delete_chat(chat_id: str):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    

@@ -1,3 +1,4 @@
+"use client";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 
 const API_BASE = process.env.REACT_APP_API_URL || "http://localhost:8000";
@@ -6,14 +7,18 @@ export default function ChatApp() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [showInspect, setShowInspect] = useState(false);
-  const [dbChats, setDbChats] = useState([]);
-  const [inspectLoading, setInspectLoading] = useState(false);
-  const [lastSavedChat, setLastSavedChat] = useState(null);
   const messagesEndRef = useRef(null);
 
-  const sessionId = "session-1";
+  // Browser memory logic (AI will remember you)
+  const [sessionId, setSessionId] = useState(() => {
+    const saved = localStorage.getItem("chat_session_id");
+    if (saved) return saved;
+    const newId = "session-" + Math.random().toString(36).substring(2, 9);
+    localStorage.setItem("chat_session_id", newId);
+    return newId;
+  });
 
+  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
@@ -36,30 +41,9 @@ export default function ChatApp() {
     }
   }, [sessionId]);
 
-  const fetchDbChats = useCallback(async () => {
-    setInspectLoading(true);
-    try {
-      const res = await fetch(`${API_BASE}/chats/${sessionId}`);
-      if (!res.ok) throw new Error("Failed to load chats");
-      const data = await res.json();
-      setDbChats(data.chats || []);
-    } catch (error) {
-      console.error("Inspect fetch error:", error);
-      setDbChats([]);
-    } finally {
-      setInspectLoading(false);
-    }
-  }, [sessionId]);
-
   useEffect(() => {
     fetchHistory();
   }, [fetchHistory]);
-
-  useEffect(() => {
-    if (showInspect) {
-      fetchDbChats();
-    }
-  }, [showInspect, fetchDbChats]);
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
@@ -83,61 +67,47 @@ export default function ChatApp() {
 
       if (res.ok && data.reply) {
         setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
-        if (data.chat) {
-          setLastSavedChat(data.chat);
-          if (showInspect) fetchDbChats();
-        }
       } else {
-        const errMsg = data.detail || "The AI API returned an error.";
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: `Error: ${errMsg}` },
-        ]);
+        setMessages((prev) => [...prev, { role: "assistant", content: "Error: AI API issue." }]);
       }
     } catch (error) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: "Network Error: Could not connect to backend. Is it running on port 8000?",
-        },
-      ]);
+      setMessages((prev) => [...prev, { role: "assistant", content: "Network Error: Backend down." }]);
     } finally {
       setIsLoading(false);
     }
   };
 
+  const clearChat = async () => {
+    if (!window.confirm("Are you sure you want to clear the chat history?")) return;
+    
+    try {
+      await fetch(`${API_BASE}/history/clear/${sessionId}`, { method: "DELETE" });
+      setMessages([]);
+      const newId = "session-" + Math.random().toString(36).substring(2, 9);
+      localStorage.setItem("chat_session_id", newId);
+      setSessionId(newId);
+    } catch (error) {
+      console.error("Failed to clear chat", error);
+    }
+  };
+
   return (
     <div style={{ backgroundColor: "#fce4ec", minHeight: "100vh", padding: "20px", fontFamily: "sans-serif" }}>
-      <div
-        style={{
-          maxWidth: "700px",
-          margin: "40px auto",
-          backgroundColor: "white",
-          borderRadius: "15px",
-          padding: "20px",
-          boxShadow: "0 10px 25px rgba(0,0,0,0.1)",
-        }}
-      >
-        <h1 style={{ textAlign: "center", color: "#d147a3", marginBottom: "8px" }}>
-          Chat with Pixie
-        </h1>
-        <p style={{ textAlign: "center", color: "#888", fontSize: "0.85em", marginBottom: "16px" }}>
-          Session: {sessionId} | API: {API_BASE}
-        </p>
+      <div style={{ maxWidth: "700px", margin: "40px auto", backgroundColor: "white", borderRadius: "15px", padding: "20px", boxShadow: "0 10px 25px rgba(0,0,0,0.1)" }}>
+        
+        {/* Clean Header with Clear Button */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px" }}>
+          <h1 style={{ color: "#d147a3", margin: 0 }}>Chat with Pixie</h1>
+          <button 
+            onClick={clearChat}
+            style={{ padding: "8px 12px", backgroundColor: "#ff4d4d", color: "white", border: "none", borderRadius: "8px", cursor: "pointer", fontWeight: "bold", fontSize: "0.9em" }}
+          >
+            Clear Chat
+          </button>
+        </div>
 
-        <div
-          style={{
-            height: "400px",
-            overflowY: "auto",
-            borderBottom: "2px solid #ffe6f2",
-            marginBottom: "20px",
-            padding: "10px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "10px",
-          }}
-        >
+        {/* Chat Box */}
+        <div style={{ height: "400px", overflowY: "auto", borderBottom: "2px solid #ffe6f2", marginBottom: "20px", padding: "10px", display: "flex", flexDirection: "column", gap: "10px" }}>
           {messages.length === 0 && (
             <p style={{ textAlign: "center", color: "#aaa", marginTop: "auto", marginBottom: "auto" }}>
               Send a message to start chatting!
@@ -146,18 +116,7 @@ export default function ChatApp() {
 
           {messages.map((msg, idx) => (
             <div key={idx} style={{ textAlign: msg.role === "user" ? "right" : "left" }}>
-              <span
-                style={{
-                  display: "inline-block",
-                  padding: "12px 18px",
-                  borderRadius: "20px",
-                  backgroundColor: msg.role === "user" ? "#d147a3" : "#f4f4f4",
-                  color: msg.role === "user" ? "white" : "#333",
-                  maxWidth: "80%",
-                  lineHeight: "1.4",
-                  wordWrap: "break-word",
-                }}
-              >
+              <span style={{ display: "inline-block", padding: "12px 18px", borderRadius: "20px", backgroundColor: msg.role === "user" ? "#d147a3" : "#f4f4f4", color: msg.role === "user" ? "white" : "#333", maxWidth: "80%", lineHeight: "1.4", wordWrap: "break-word" }}>
                 {msg.content}
               </span>
             </div>
@@ -165,17 +124,7 @@ export default function ChatApp() {
 
           {isLoading && (
             <div style={{ textAlign: "left" }}>
-              <span
-                style={{
-                  display: "inline-block",
-                  padding: "12px 18px",
-                  borderRadius: "20px",
-                  backgroundColor: "#f4f4f4",
-                  color: "#888",
-                  fontStyle: "italic",
-                  fontSize: "0.9em",
-                }}
-              >
+              <span style={{ display: "inline-block", padding: "12px 18px", borderRadius: "20px", backgroundColor: "#f4f4f4", color: "#888", fontStyle: "italic", fontSize: "0.9em" }}>
                 Pixie is typing...
               </span>
             </div>
@@ -183,114 +132,25 @@ export default function ChatApp() {
           <div ref={messagesEndRef} />
         </div>
 
-        <div style={{ display: "flex", gap: "10px", marginBottom: "12px" }}>
-          <input
-            type="text"
+        {/* Input Area */}
+        <div style={{ display: "flex", gap: "10px" }}>
+          <input 
+            type="text" 
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && sendMessage()}
-            style={{
-              flex: 1,
-              padding: "12px",
-              borderRadius: "10px",
-              border: "1px solid #ffccf2",
-              outline: "none",
-            }}
+            style={{ flex: 1, padding: "12px", borderRadius: "10px", border: "1px solid #ffccf2", outline: "none" }}
             placeholder="Tell Pixie something..."
             disabled={isLoading}
           />
-          <button
-            onClick={sendMessage}
+          <button 
+            onClick={sendMessage} 
             disabled={isLoading}
-            style={{
-              padding: "12px 24px",
-              backgroundColor: isLoading ? "#ffb3e6" : "#d147a3",
-              color: "white",
-              border: "none",
-              borderRadius: "10px",
-              cursor: isLoading ? "not-allowed" : "pointer",
-              fontWeight: "bold",
-            }}
+            style={{ padding: "12px 24px", backgroundColor: isLoading ? "#ffb3e6" : "#d147a3", color: "white", border: "none", borderRadius: "10px", cursor: isLoading ? "not-allowed" : "pointer", fontWeight: "bold" }}
           >
             Send
           </button>
         </div>
-
-        <button
-          onClick={() => setShowInspect((v) => !v)}
-          style={{
-            width: "100%",
-            padding: "10px",
-            backgroundColor: "#fff0f6",
-            border: "1px solid #ffccf2",
-            borderRadius: "8px",
-            color: "#d147a3",
-            cursor: "pointer",
-            fontWeight: "600",
-            marginBottom: showInspect ? "12px" : "0",
-          }}
-        >
-          {showInspect ? "Hide MongoDB Inspect" : "Inspect MongoDB Chats"}
-        </button>
-
-        {showInspect && (
-          <div
-            style={{
-              backgroundColor: "#1e1e1e",
-              color: "#d4d4d4",
-              borderRadius: "8px",
-              padding: "12px",
-              maxHeight: "300px",
-              overflowY: "auto",
-              fontSize: "12px",
-              fontFamily: "monospace",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-              <span style={{ color: "#9cdcfe" }}>
-                {inspectLoading ? "Loading..." : `${dbChats.length} chat object(s) in DB`}
-              </span>
-              <button
-                onClick={fetchDbChats}
-                style={{
-                  background: "#333",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "4px",
-                  padding: "4px 8px",
-                  cursor: "pointer",
-                  fontSize: "11px",
-                }}
-              >
-                Refresh
-              </button>
-            </div>
-
-            {lastSavedChat && (
-              <div style={{ marginBottom: "12px" }}>
-                <div style={{ color: "#4ec9b0", marginBottom: "4px" }}>Last saved object:</div>
-                <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {JSON.stringify(lastSavedChat, null, 2)}
-                </pre>
-              </div>
-            )}
-
-            {dbChats.length === 0 && !inspectLoading && (
-              <p style={{ color: "#888" }}>No chat objects found for this session yet.</p>
-            )}
-
-            {dbChats.map((chat, i) => (
-              <div key={chat._id || i} style={{ marginBottom: "12px", borderTop: "1px solid #333", paddingTop: "8px" }}>
-                <div style={{ color: "#ce9178", marginBottom: "4px" }}>
-                  Object #{i + 1} — _id: {chat._id}
-                </div>
-                <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                  {JSON.stringify(chat, null, 2)}
-                </pre>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
